@@ -1,0 +1,52 @@
+run:
+  timeout: 5m
+  concurrency: 4
+  modules-download-mode: readonly
+
+linters:
+  disable-all: true
+  enable:
+    - asasalint
+    - govet
+    - rowserrcheck
+    - errcheck
+    - ineffassign
+    - staticcheck
+    - typecheck
+    - unconvert
+    - goconst
+    - gocritic
+    - goimports
+    - gosimple
+    - revive
+    - unused
+
+linters-settings:
+  govet:
+    enable-all: true
+    disable:
+      - fieldalignment
+
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - style
+      - performance
+    disabled-checks:
+      - appendAssign
+
+  revive:
+    rules:
+      - name: exported
+        arguments:
+          - disableStutteringCheck: true
+
+issues:
+  exclude-use-default: false
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+        - goconst
