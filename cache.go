@@ -10,7 +10,6 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/devian2011/cache/dto"
-	"github.com/devian2011/cache/normalizer"
 )
 
 // Normalizer defines the interface for standardizing and cleaning up cache keys.
@@ -91,7 +90,7 @@ func (c *Cache) clearOnTTL() {
 // Utilizing singleflight ensures that if multiple concurrent goroutines trigger SetOnce using identical keys,
 // the evaluation function triggers exactly once, effectively shielding the data source from heavy request spikes.
 func (c *Cache) SetOnce(ctx context.Context, once dto.ItemOnce) error {
-	key, err := normalizer.NormalizeQuery(once.GetKey())
+	key, err := c.n.Normalize(once.GetKey())
 	if err != nil {
 		key = once.GetKey()
 	}
@@ -112,6 +111,18 @@ func (c *Cache) SetOnce(ctx context.Context, once dto.ItemOnce) error {
 // SetManyOnce concurrently schedules a batch of dto.ItemOnce evaluation tasks using the SetOnce method.
 // It groups identical keys together seamlessly, protecting systems against redundant parallel computations.
 func (c *Cache) SetManyOnce(ctx context.Context, onceList []dto.ItemOnce) {
+	onceUpdatedList := make([]dto.ItemOnce, 0, len(onceList))
+	for _, once := range onceList {
+		k, e := c.n.Normalize(once.GetKey())
+		if e != nil {
+			k = once.GetKey()
+		}
+		onceUpdatedList = append(onceUpdatedList, &dto.ItemOnceImpl{
+			Key: k,
+			Fn:  once.GetValue(),
+		})
+	}
+
 	var wg sync.WaitGroup
 
 	wg.Add(len(onceList))
@@ -128,24 +139,51 @@ func (c *Cache) SetManyOnce(ctx context.Context, onceList []dto.ItemOnce) {
 
 // Get fetches the value corresponding to a key directly from the underlying Store engine.
 func (c *Cache) Get(ctx context.Context, key string) (any, error) {
+	key, err := c.n.Normalize(key)
+	if err != nil {
+		return nil, err
+	}
 	return c.store.Get(ctx, key)
 }
 
 // GetMany pulls a map containing values for a specified slice of keys directly from the Store engine.
 // The map will omit keys that do not physically exist inside the store.
 func (c *Cache) GetMany(ctx context.Context, keys []string) (map[string]any, error) {
-	return c.store.GetMany(ctx, keys)
+	k := make([]string, 0, len(keys))
+	for _, key := range keys {
+		mk, e := c.n.Normalize(key)
+		if e != nil {
+			mk = key
+		}
+		k = append(k, mk)
+	}
+
+	return c.store.GetMany(ctx, k)
 }
 
 // Set saves an item directly into the underlying Store, skipping singleflight logic or TTL records.
 func (c *Cache) Set(ctx context.Context, item dto.Item) error {
-	return c.store.Set(ctx, item)
+	key, err := c.n.Normalize(item.GetKey())
+	if err != nil {
+		return err
+	}
+	return c.store.Set(ctx, &dto.ItemImpl{
+		Key:   key,
+		Value: item.GetValue(),
+	})
 }
 
 // SetWithTtl registers an item inside the Store and maps its expiration timestamp within the internal ttlMap.
 // Once the specified duration passes, the background worker routine will automatically evict the key.
 func (c *Cache) SetWithTtl(ctx context.Context, item dto.Item, duration time.Duration) error {
-	err := c.store.Set(ctx, item)
+	key, err := c.n.Normalize(item.GetKey())
+	if err != nil {
+		return err
+	}
+	err = c.store.Set(ctx, &dto.ItemImpl{
+		Key:   key,
+		Value: item.GetValue(),
+	})
 	if err != nil {
 		return err
 	}
@@ -158,21 +196,46 @@ func (c *Cache) SetWithTtl(ctx context.Context, item dto.Item, duration time.Dur
 
 // SetMany persists a slice of elements directly into the underling Store in a batch mode.
 func (c *Cache) SetMany(ctx context.Context, items []dto.Item) error {
+	iList := make([]dto.Item, 0, len(items))
+	for _, item := range items {
+		k, e := c.n.Normalize(item.GetKey())
+		if e != nil {
+			k = item.GetKey()
+		}
+		iList = append(iList, &dto.ItemImpl{
+			Key:   k,
+			Value: item.GetValue(),
+		})
+	}
+
 	return c.store.SetMany(ctx, items)
 }
 
 // Delete evicts an element from the Store and explicitly clears out any running singleflight locks for that specific key.
 func (c *Cache) Delete(ctx context.Context, key string) error {
+	key, err := c.n.Normalize(key)
+	if err != nil {
+		return err
+	}
 	c.sf.Forget(key)
 	return c.store.Delete(ctx, key)
 }
 
 // DeleteMany removes a batch of keys from the Store and safely resets singleflight tracking for each of them.
 func (c *Cache) DeleteMany(ctx context.Context, keys []string) error {
+	k := make([]string, 0, len(keys))
 	for _, key := range keys {
+		mk, e := c.n.Normalize(key)
+		if e != nil {
+			mk = key
+		}
+		k = append(k, mk)
+	}
+
+	for _, key := range k {
 		c.sf.Forget(key)
 	}
-	return c.store.DeleteMany(ctx, keys)
+	return c.store.DeleteMany(ctx, k)
 }
 
 // Clear wipes the underlying Store and re-instantiates a clean, decoupled singleflight.Group instance.
