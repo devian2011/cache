@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/bradfitz/gomemcache v0.0.0-20260422231931-4d751bb6e37c
-	github.com/redis/go-redis/v9 v9.20.0
+	github.com/redis/go-redis/v9 v9.20.1
 	golang.org/x/sync v0.21.0
 )
 
