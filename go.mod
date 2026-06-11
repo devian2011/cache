@@ -1,6 +1,6 @@
 module github.com/devian2011/cache
 
-go 1.25.0
+go 1.24.0
 
 require (
 	github.com/bradfitz/gomemcache v0.0.0-20260422231931-4d751bb6e37c
