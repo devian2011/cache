@@ -62,6 +62,8 @@ func NewCache(ctx context.Context, store Store, n Normalizer) *Cache {
 		ttlMap:    make(map[string]time.Time),
 	}
 
+	go c.clearOnTTL()
+
 	return c
 }
 

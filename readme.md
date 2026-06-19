@@ -50,13 +50,10 @@ func main() {
 
 	// Initialize dependencies
 	memStore := store.NewMemStore()
-	norm := normalizer.NewSimpleNormalizer()
+	norm := normalizer.New(normalizer.NormalizeQuery)
 
 	// Create the cache instance
 	cacheComponent := cache.NewCache(ctx, memStore, norm)
-
-	// Critical step: Start the background TTL eviction loop in a separate goroutine
-	go cacheComponent.clearOnTTL()
 }
 ```
 
