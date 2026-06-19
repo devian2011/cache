@@ -5,7 +5,8 @@ The `cache` package is a lightweight caching library for Go designed to simplify
 ## Core Features
 * **Deduplicated Computation (`SetOnce`)**: If 100 goroutines concurrently request a heavy computation for the exact same key, the actual evaluation function executes exactly once. The remaining 99 goroutines block safely, wait, and share the identical outcome.
 * **TTL Lifecycle Management**: Native support for automatic time-based cache eviction.
-* **Storage Agnostic**: A highly pluggable `Store` interface lets you shift between a standard local `sync.Map`, Redis, or Memcached seamlessly.
+* **Storage Agnostic**: A highly pluggable `Store` interface lets you shift between a standard local `sync.Map`, Redis, or Memcached seamlessly.* **Deduplicated TTL Computation (`SetOnceWithTtl`)**: Combines the `singleflight` protection against database spikes with an automatic expiration time.
+
 
 ## Installation
 
@@ -132,6 +133,27 @@ func handleHeavyRequest(ctx context.Context, c *cache.Cache, userID string) (any
 
 	// Safely retrieve the freshly stored data from cache
 	return c.Get(ctx, "user_profile:"+userID)
+}
+```
+
+```go
+func handleHeavyRequestWithTtl(ctx context.Context, c *cache.Cache, userID string) (any, error) {
+	task := &dto.ItemOnceImpl{
+		Key: "user_metrics:" + userID,
+		Fn: func() (any, error) {
+			println("--> [!] Aggregating heavy metrics from DB...")
+			time.Sleep(3 * time.Second)
+			return "Metrics Payload", nil
+		},
+	}
+
+	// Вызов нового метода с указанием TTL
+	err := c.SetOnceWithTtl(ctx, task, 10 * time.Minute)
+	if err != nil {
+		return nil, err
+	}
+
+	return c.Get(ctx, "user_metrics:"+userID)
 }
 ```
 
@@ -278,6 +300,18 @@ err := cacheComponent.SetMany(ctx, items)
 ---
 
 ### Concurrent Protection & Deduplication
+
+#### `SetOnceWithTtl(ctx context.Context, once dto.ItemOnce, ttl time.Duration) error`
+Evaluates a heavy operation utilizing singleflight deduplication, saves its outcome into the underlying Store, and sets an expiration timestamp for background eviction.
+
+```go
+task := &dto.ItemOnceImpl{
+    Key: "heavy_calc_ttl",
+    Fn:  func() (any, error) { return "expiring_data", nil },
+}
+err := cacheComponent.SetOnceWithTtl(ctx, task, 30 * time.Minute)
+```
+
 
 #### `SetOnce(ctx context.Context, once dto.ItemOnce) error`
 Shields downstream dependencies from load spikes on cold entries. It wraps an expensive evaluation task (e.g., heavy database or external API calls) and coordinates incoming parallel demands.

@@ -173,6 +173,26 @@ func (c *Cache) Set(ctx context.Context, item dto.Item) error {
 	})
 }
 
+// SetOnceWithTtl evaluates a heavy operation wrapped inside a dto.ItemOnce container,
+// saves its outcome into the underlying Store, and sets an expiration timestamp.
+// Utilizing singleflight ensures duplicate concurrent calls execute the evaluation function
+// exactly once, while the background worker handles eviction after the duration expires.
+func (c *Cache) SetOnceWithTtl(ctx context.Context, once dto.ItemOnce, ttl time.Duration) error {
+	key, err := c.n.Normalize(once.GetKey())
+	if err != nil {
+		key = once.GetKey()
+	}
+
+	val, err, _ := c.sf.Do(key, func() (any, error) {
+		return once.GetValue()()
+	})
+	if err != nil {
+		return err
+	}
+
+	return c.SetWithTtl(ctx, &dto.ItemImpl{Key: once.GetKey(), Value: val}, ttl)
+}
+
 // SetWithTtl registers an item inside the Store and maps its expiration timestamp within the internal ttlMap.
 // Once the specified duration passes, the background worker routine will automatically evict the key.
 func (c *Cache) SetWithTtl(ctx context.Context, item dto.Item, duration time.Duration) error {

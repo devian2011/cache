@@ -77,17 +77,48 @@ func (m *mockStore) Set(ctx context.Context, item dto.Item) error {
 }
 
 func (m *mockStore) GetMany(ctx context.Context, keys []string) (map[string]any, error) {
-	return nil, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	res := make(map[string]any)
+	for _, k := range keys {
+		if val, ok := m.data[k]; ok {
+			res[k] = val
+		}
+	}
+	return res, nil
 }
-func (m *mockStore) SetMany(ctx context.Context, items []dto.Item) error { return nil }
+
+func (m *mockStore) SetMany(ctx context.Context, items []dto.Item) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, item := range items {
+		m.data[item.GetKey()] = item.GetValue()
+	}
+	return nil
+}
+
 func (m *mockStore) Delete(ctx context.Context, key string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.data, key)
 	return nil
 }
-func (m *mockStore) DeleteMany(ctx context.Context, keys []string) error { return nil }
-func (m *mockStore) Clear() error                                        { return nil }
+
+func (m *mockStore) DeleteMany(ctx context.Context, keys []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, k := range keys {
+		delete(m.data, k)
+	}
+	return nil
+}
+
+func (m *mockStore) Clear() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.data = make(map[string]any)
+	return nil
+}
 
 func TestCache_BaseProxy(t *testing.T) {
 	ctx := context.Background()
@@ -228,5 +259,143 @@ func TestCache_Delete_Forget(t *testing.T) {
 
 	if !secondTime {
 		t.Error("Singleflight Forget didn't work: second SetOnce call was skipped")
+	}
+}
+
+func TestCache_SetOnceWithTtl_SingleflightAndTtl(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := newMockStore()
+	norm := &mockNormalizer{}
+	c := NewCache(ctx, store, norm)
+
+	go c.clearOnTTL()
+
+	var fnExecutionCount int32
+	var wg sync.WaitGroup
+
+	heavyFn := func() (any, error) {
+		atomic.AddInt32(&fnExecutionCount, 1)
+		time.Sleep(40 * time.Millisecond)
+		return "ttl_computed_value", nil
+	}
+
+	onceItem := &mockItemOnce{
+		key: "ttl_heavy_task",
+		fn:  heavyFn,
+	}
+
+	workers := 5
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			_ = c.SetOnceWithTtl(ctx, onceItem, 50*time.Millisecond)
+		}()
+	}
+	wg.Wait()
+
+	if atomic.LoadInt32(&fnExecutionCount) != 1 {
+		t.Errorf("heavyFn inside SetOnceWithTtl executed %d times, expected exactly 1", fnExecutionCount)
+	}
+
+	storedVal, _ := store.Get(ctx, "ttl_heavy_task")
+	if storedVal != "ttl_computed_value" {
+		t.Errorf("Expected 'ttl_computed_value' in store, got %v", storedVal)
+	}
+
+	c.ttlMapMtx.Lock()
+	_, existsInMap := c.ttlMap["ttl_heavy_task"]
+	c.ttlMapMtx.Unlock()
+	if !existsInMap {
+		t.Error("Expected key to exist inside internal ttlMap")
+	}
+
+	time.Sleep(1500 * time.Millisecond)
+
+	exists, _ := store.Has(ctx, "ttl_heavy_task")
+	if exists {
+		t.Error("Item uploaded via SetOnceWithTtl should have been deleted by TTL worker")
+	}
+}
+
+func TestCache_GetMany_And_SetMany(t *testing.T) {
+	ctx := context.Background()
+	store := newMockStore()
+	norm := &mockNormalizer{}
+	c := NewCache(ctx, store, norm)
+
+	items := []dto.Item{
+		&mockItem{key: "batch1", value: "v1"},
+		&mockItem{key: "batch2", value: "v2"},
+	}
+
+	err := c.SetMany(ctx, items)
+	if err != nil {
+		t.Fatalf("SetMany failed: %v", err)
+	}
+
+	res, err := c.GetMany(ctx, []string{"batch1", "batch2", "missing"})
+	if err != nil {
+		t.Fatalf("GetMany failed: %v", err)
+	}
+
+	if len(res) != 2 {
+		t.Errorf("Expected map length 2, got %d", len(res))
+	}
+	if res["batch1"] != "v1" || res["batch2"] != "v2" {
+		t.Errorf("Incorrect values returned from GetMany: %v", res)
+	}
+}
+
+func TestCache_DeleteMany(t *testing.T) {
+	ctx := context.Background()
+	store := newMockStore()
+	norm := &mockNormalizer{}
+	c := NewCache(ctx, store, norm)
+
+	_ = c.SetOnce(ctx, &mockItemOnce{key: "del1", fn: func() (any, error) { return "v1", nil }})
+	_ = c.SetOnce(ctx, &mockItemOnce{key: "del2", fn: func() (any, error) { return "v2", nil }})
+
+	err := c.DeleteMany(ctx, []string{"del1", "del2"})
+	if err != nil {
+		t.Fatalf("DeleteMany failed: %v", err)
+	}
+
+	var rerun1, rerun2 bool
+	_ = c.SetOnce(ctx, &mockItemOnce{key: "del1", fn: func() (any, error) { rerun1 = true; return "v1-new", nil }})
+	_ = c.SetOnce(ctx, &mockItemOnce{key: "del2", fn: func() (any, error) { rerun2 = true; return "v2-new", nil }})
+
+	if !rerun1 || !rerun2 {
+		t.Error("DeleteMany failed to clear singleflight keys")
+	}
+}
+
+func TestCache_Clear(t *testing.T) {
+	ctx := context.Background()
+	store := newMockStore()
+	norm := &mockNormalizer{}
+	c := NewCache(ctx, store, norm)
+
+	_ = c.SetOnce(ctx, &mockItemOnce{key: "clear_me", fn: func() (any, error) { return "data", nil }})
+
+	err := c.Clear()
+	if err != nil {
+		t.Fatalf("Clear failed: %v", err)
+	}
+
+	var singleflightReset bool
+	_ = c.SetOnce(ctx, &mockItemOnce{key: "clear_me", fn: func() (any, error) {
+		singleflightReset = true
+		return "new_data", nil
+	}})
+
+	if !singleflightReset {
+		t.Error("Clear failed to reset internal singleflight group")
+	}
+
+	_, err = store.Get(ctx, "clear_me")
+	if err == nil {
+		t.Error("Expected data to be completely erased from backend store")
 	}
 }
