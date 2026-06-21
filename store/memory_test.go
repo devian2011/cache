@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -34,10 +35,20 @@ func TestMemStore_BaseOperations(t *testing.T) {
 		t.Errorf("Expected 'John', got %v", val)
 	}
 
-	if !s.Has(ctx, "user_1") {
+	// Fixed: Has now returns (bool, error)
+	exists, err := s.Has(ctx, "user_1")
+	if err != nil {
+		t.Fatalf("Has failed: %v", err)
+	}
+	if !exists {
 		t.Error("Expected key 'user_1' to exist")
 	}
-	if s.Has(ctx, "non_existent") {
+
+	exists, err = s.Has(ctx, "non_existent")
+	if err != nil {
+		t.Fatalf("Has failed: %v", err)
+	}
+	if exists {
 		t.Error("Expected key 'non_existent' to not exist")
 	}
 
@@ -50,7 +61,12 @@ func TestMemStore_BaseOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Delete failed: %v", err)
 	}
-	if s.Has(ctx, "user_1") {
+
+	exists, err = s.Has(ctx, "user_1")
+	if err != nil {
+		t.Fatalf("Has failed: %v", err)
+	}
+	if exists {
 		t.Error("Key 'user_1' should be deleted")
 	}
 }
@@ -90,10 +106,22 @@ func TestMemStore_BatchOperations(t *testing.T) {
 		t.Fatalf("DeleteMany failed: %v", err)
 	}
 
-	if s.Has(ctx, "k1") || s.Has(ctx, "k2") {
-		t.Error("Keys k1 and k2 should have been deleted")
+	// Fixed: Has now returns (bool, error)
+	for _, key := range []string{"k1", "k2"} {
+		exists, err := s.Has(ctx, key)
+		if err != nil {
+			t.Fatalf("Has failed for %s: %v", key, err)
+		}
+		if exists {
+			t.Errorf("Key %s should have been deleted", key)
+		}
 	}
-	if !s.Has(ctx, "k3") {
+
+	exists, err := s.Has(ctx, "k3")
+	if err != nil {
+		t.Fatalf("Has failed: %v", err)
+	}
+	if !exists {
 		t.Error("Key k3 should still exist")
 	}
 }
@@ -109,7 +137,12 @@ func TestMemStore_Clear(t *testing.T) {
 		t.Fatalf("Clear failed: %v", err)
 	}
 
-	if s.Has(ctx, "temp") {
+	// Fixed: Has now returns (bool, error)
+	exists, err := s.Has(ctx, "temp")
+	if err != nil {
+		t.Fatalf("Has failed: %v", err)
+	}
+	if exists {
 		t.Error("Store should be empty after Clear")
 	}
 }
@@ -122,6 +155,7 @@ func TestMemStore_Concurrency(t *testing.T) {
 	workers := 50
 	iterations := 100
 
+	// Test concurrent scalar operations
 	for i := 0; i < workers; i++ {
 		wg.Add(2)
 
@@ -139,9 +173,34 @@ func TestMemStore_Concurrency(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < iterations; j++ {
 				_, _ = s.Get(ctx, "key")
-				_ = s.Has(ctx, "key")
+				_, _ = s.Has(ctx, "key")
 			}
 		}()
+	}
+
+	// Test concurrent batch operations
+	for i := 0; i < workers; i++ {
+		wg.Add(2)
+
+		go func(workerID int) {
+			defer wg.Done()
+			batchItems := []dto.Item{
+				&mockItem{key: fmt.Sprintf("batch_%d_1", workerID), value: workerID},
+				&mockItem{key: fmt.Sprintf("batch_%d_2", workerID), value: workerID},
+			}
+			for j := 0; j < iterations; j++ {
+				_ = s.SetMany(ctx, batchItems)
+				_, _ = s.GetMany(ctx, []string{fmt.Sprintf("batch_%d_1", workerID), "non_existent"})
+			}
+		}(i)
+
+		go func(workerID int) {
+			defer wg.Done()
+			keysToDelete := []string{fmt.Sprintf("batch_%d_1", workerID), fmt.Sprintf("batch_%d_2", workerID)}
+			for j := 0; j < iterations; j++ {
+				_ = s.DeleteMany(ctx, keysToDelete)
+			}
+		}(i)
 	}
 
 	wg.Wait()
