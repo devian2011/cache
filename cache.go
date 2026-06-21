@@ -45,6 +45,8 @@ type Cache struct {
 	sf    *singleflight.Group
 	n     Normalizer
 
+	mtx *sync.RWMutex
+
 	ttlMapMtx *sync.Mutex
 	ttlMap    map[string]time.Time
 }
@@ -58,6 +60,7 @@ func NewCache(ctx context.Context, store Store, n Normalizer) *Cache {
 		store:     store,
 		sf:        &singleflight.Group{},
 		n:         n,
+		mtx:       &sync.RWMutex{},
 		ttlMapMtx: &sync.Mutex{},
 		ttlMap:    make(map[string]time.Time),
 	}
@@ -97,7 +100,11 @@ func (c *Cache) SetOnce(ctx context.Context, once dto.ItemOnce) error {
 		key = once.GetKey()
 	}
 
-	val, err, _ := c.sf.Do(key, func() (any, error) {
+	c.mtx.RLock()
+	sf := c.sf
+	c.mtx.RUnlock()
+
+	val, err, _ := sf.Do(key, func() (any, error) {
 		return once.GetValue()()
 	})
 	if err != nil {
@@ -262,6 +269,8 @@ func (c *Cache) DeleteMany(ctx context.Context, keys []string) error {
 
 // Clear wipes the underlying Store and re-instantiates a clean, decoupled singleflight.Group instance.
 func (c *Cache) Clear() error {
+	c.mtx.Lock()
 	c.sf = &singleflight.Group{}
+	c.mtx.Unlock()
 	return c.store.Clear()
 }

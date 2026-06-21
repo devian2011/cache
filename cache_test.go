@@ -384,18 +384,34 @@ func TestCache_Clear(t *testing.T) {
 		t.Fatalf("Clear failed: %v", err)
 	}
 
+	_, err = store.Get(ctx, "clear_me")
+	if err == nil {
+		t.Error("Data was found, expected data to be completely erased from backend store after Clear()")
+	}
+
+	block := make(chan struct{})
+	started := make(chan struct{})
+
+	go func() {
+		_ = c.SetOnce(ctx, &mockItemOnce{key: "heavy_key", fn: func() (any, error) {
+			close(started)
+			<-block
+			return "heavy_data", nil
+		}})
+	}()
+
+	<-started
+
+	_ = c.Clear()
+	close(block)
+
 	var singleflightReset bool
-	_ = c.SetOnce(ctx, &mockItemOnce{key: "clear_me", fn: func() (any, error) {
+	_ = c.SetOnce(ctx, &mockItemOnce{key: "heavy_key", fn: func() (any, error) {
 		singleflightReset = true
-		return "new_data", nil
+		return "new_heavy_data", nil
 	}})
 
 	if !singleflightReset {
 		t.Error("Clear failed to reset internal singleflight group")
-	}
-
-	_, err = store.Get(ctx, "clear_me")
-	if err == nil {
-		t.Error("Expected data to be completely erased from backend store")
 	}
 }
