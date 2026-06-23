@@ -89,6 +89,11 @@ func TestFastNormalizeQuery(t *testing.T) {
 			input: "%3F%23%3D=value&%26=amp&a=1",
 			want:  "&=amp&?=value&a=1",
 		},
+		{
+			name:  "Проверка полного пути в url",
+			input: "/some/path?filters[key]=termal&filters[key]=awasp&filter[a]=2&filter[a]=1",
+			want:  "/some/path?filter[a]=1&filter[a]=2&filters[key]=awasp&filters[key]=termal",
+		},
 	}
 
 	for _, tt := range tests {

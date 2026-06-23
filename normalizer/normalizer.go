@@ -25,7 +25,6 @@ func (n *Normalizer) Normalize(key string) (string, error) {
 			return "", err
 		}
 	}
-
 	return key, nil
 }
 
@@ -33,6 +32,19 @@ func NormalizeQuery(query string) (string, error) {
 	if query == "" {
 		return "", nil
 	}
+
+	var pathPrefix string
+	if qIdx := strings.IndexByte(query, '?'); qIdx != -1 {
+		pathPrefix = query[:qIdx+1]
+		query = query[qIdx+1:]
+	}
+
+	if query == "" {
+		return pathPrefix, nil
+	}
+
+	lowerQuery := strings.ToLower(query)
+	skipStrip := strings.Contains(lowerQuery, "%5b%5d") || strings.Contains(lowerQuery, "[]")
 
 	groups := make(map[string][]string)
 	var keyOrder []string
@@ -47,14 +59,12 @@ func NormalizeQuery(query string) (string, error) {
 				continue
 			}
 
-			eqIdx := strings.IndexByte(pair, '=')
 			var rawK, rawV string
-			if eqIdx != -1 {
+			if eqIdx := strings.IndexByte(pair, '='); eqIdx != -1 {
 				rawK = pair[:eqIdx]
 				rawV = pair[eqIdx+1:]
 			} else {
 				rawK = pair
-				rawV = ""
 			}
 
 			k, err := url.QueryUnescape(rawK)
@@ -69,7 +79,7 @@ func NormalizeQuery(query string) (string, error) {
 			k = strings.ReplaceAll(k, "#", "")
 			k = strings.ReplaceAll(k, "=", "")
 
-			if !strings.Contains(query, "%5B%5D") && !strings.Contains(query, "[]") {
+			if !skipStrip {
 				k = removeAllNumericIndices(k)
 			}
 
@@ -98,8 +108,11 @@ func NormalizeQuery(query string) (string, error) {
 	}
 
 	var buf bytes.Buffer
-	isFirst := true
+	if pathPrefix != "" {
+		buf.WriteString(pathPrefix)
+	}
 
+	isFirst := true
 	for _, k := range keyOrder {
 		values := groups[k]
 		for _, val := range values {
@@ -108,9 +121,9 @@ func NormalizeQuery(query string) (string, error) {
 			}
 			isFirst = false
 
-			buf.WriteString(k)
+			buf.WriteString(url.QueryEscape(k))
 			buf.WriteByte('=')
-			buf.WriteString(val)
+			buf.WriteString(url.QueryEscape(val))
 		}
 	}
 
@@ -118,7 +131,13 @@ func NormalizeQuery(query string) (string, error) {
 }
 
 func removeAllNumericIndices(key string) string {
-	var result bytes.Buffer
+	// Оптимизация: не выделяем память, если в ключе вообще нет открывающей скобки
+	if !strings.Contains(key, "[") {
+		return key
+	}
+
+	var result strings.Builder
+	result.Grow(len(key))
 	i := 0
 	for i < len(key) {
 		if key[i] == '[' {
